@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { checkESConnection } from "./config/elastic";
+import { startConsumer } from "./services/consumer.service"; // <--- 1. IMPORT INI
 
 // Import Routes
 import authRoutes from "./routes/auth.route";
@@ -25,7 +26,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/users", userRoutes);
 
-// 3. Health Check (Cek server hidup/mati)
+// 3. Health Check
 app.get("/", (req, res) => {
   res.send("🎣 Toko Pancing API is Running! 🚀");
 });
@@ -36,6 +37,12 @@ app.get("/", (req, res) => {
 app.listen(PORT, async () => {
   console.log(`\n🚀 Server running at http://localhost:${PORT}`);
 
-  // Cek koneksi ke Search Engine saat server nyala
+  // 1. Cek Koneksi Elastic (Health Check)
   await checkESConnection();
+
+  // 2. Jalankan Sync Worker (Kafka Consumer)
+  // Ini akan berjalan di background (asynchronous) tanpa memblokir API Express
+  startConsumer().catch(err => {
+    console.error("💀 Gagal menjalankan Sync Worker:", err);
+  });
 });

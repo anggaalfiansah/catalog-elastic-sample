@@ -132,8 +132,9 @@ export default function Home() {
                   {/* Bagian Atas: Konten Teks */}
                   <div className="flex flex-1 flex-col p-6">
                     {/* Kategori Badge (Pindah ke sini karena gambar hilang) */}
-                    <div className="mb-3">
+                    <div className="mb-3 flex items-center justify-between gap-2">
                       <span className="inline-block rounded-full bg-blue-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-blue-600">{product.category}</span>
+                      <span className=" inline-block rounded-full bg-blue-50 px-3 py-1 text-xs  text-gray-800 transition-colors group-hover:text-blue-600 line-clamp-2">{product.sku}</span>
                     </div>
 
                     {/* Judul Produk */}

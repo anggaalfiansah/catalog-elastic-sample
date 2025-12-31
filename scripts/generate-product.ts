@@ -24,16 +24,15 @@ async function generateBulkProducts(count: number) {
     const category = categories[Math.floor(Math.random() * categories.length)];
     const brand = brands[Math.floor(Math.random() * brands.length)];
     const material = materials[Math.floor(Math.random() * materials.length)];
-    
+
     // Buat data produk unik
-    const sku = `${category.substring(0, 3).toUpperCase()}-${brand.substring(0, 2).toUpperCase()}-${1000 + i}`;
+    const sku = `${category.substring(0, 3).toUpperCase()}-${brand.substring(0, 2).toUpperCase()}-${1000 + i}-X`;
     const name = `${category} ${brand} Series ${i * 7}`;
     const price = Math.floor(Math.random() * (2000000 - 50000 + 1) + 50000); // Range 50rb - 2jt
     const tags = `${category.toLowerCase()}, ${brand.toLowerCase()}, ${material.toLowerCase()}`;
 
     try {
-      // 1. Simpan ke Postgres
-      const product = await prisma.product.create({
+      await prisma.product.create({
         data: {
           sku,
           name,
@@ -42,22 +41,6 @@ async function generateBulkProducts(count: number) {
           price,
           tags,
           createdById: admin.id,
-          isActive: true
-        }
-      });
-
-      // 2. Simpan ke Elasticsearch
-      await esClient.index({
-        index: ES_INDEX,
-        id: product.id.toString(),
-        document: {
-          id: product.id,
-          sku: product.sku,
-          name: product.name,
-          description: product.description,
-          category: product.category,
-          price: product.price,
-          tags: product.tags,
           isActive: true,
         },
       });

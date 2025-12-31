@@ -1,25 +1,29 @@
+version: '3.8'
+
 services:
   # ----------------------------
-  # 1. MySQL (Image Official Docker Hub)
+  # 1. PostgreSQL (Source)
   # ----------------------------
   postgres:
     image: postgres:16-alpine
     container_name: catalog_postgres
     restart: always
+    ports:
+      - "5450:5432"
     environment:
       POSTGRES_USER: user_catalog
       POSTGRES_PASSWORD: userpassword
       POSTGRES_DB: catalog_db
-    ports:
-      - "5450:5432" # <-- Kita akses via port 5450 (biar aman dari postgres lokal lain)
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
+    # Wajib untuk Debezium CDC
+    command: ["postgres", "-c", "wal_level=logical"]
 
   # ----------------------------
-  # 2. Elasticsearch (Image Official Elastic.co)
+  # 2. Elasticsearch
   # ----------------------------
   elasticsearch:
-    image: elastic/elasticsearch:9.2.3 # <-- Versi Stabil & Gratis
+    image: elastic/elasticsearch:9.2.3
     container_name: catalog_elastic
     environment:
       - node.name=es01
@@ -33,10 +37,10 @@ services:
       - ./volumes/elastic:/usr/share/elasticsearch/data
 
   # ----------------------------
-  # 3. Kibana (Image Official Elastic.co)
+  # 3. Kibana
   # ----------------------------
   kibana:
-    image: elastic/kibana:9.2.3 # <-- Versi disamakan dengan ES
+    image: elastic/kibana:9.2.3
     container_name: catalog_kibana
     ports:
       - "5601:5601"
@@ -44,3 +48,56 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     depends_on:
       - elasticsearch
+
+  # ==========================================
+  # INFRASTRUKTUR EVENT STREAMING (UPDATED)
+  # ==========================================
+
+  # 4. Zookeeper (Updated to 7.8.0)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.8.0
+    container_name: catalog_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - ./volumes/zookeeper/data:/var/lib/zookeeper/data
+      - ./volumes/zookeeper/log:/var/lib/zookeeper/log
+
+  # 5. Kafka (Updated to 7.8.0)
+  kafka:
+    image: confluentinc/cp-kafka:7.8.0
+    container_name: catalog_kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      # Data Kafka disimpan local (State Debezium aman disini)
+      - ./volumes/kafka:/var/lib/kafka/data
+
+  # 6. Debezium Connect (Updated to 3.0)
+  debezium:
+    image: quay.io/debezium/connect:3.0
+    container_name: catalog_debezium
+    ports:
+      - "8083:8083"
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:29092
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=catalog_connect_configs
+      - OFFSET_STORAGE_TOPIC=catalog_connect_offsets
+      - STATUS_STORAGE_TOPIC=catalog_connect_statuses
+      # Converter JSON agar mudah dibaca (tanpa schema registry)
+      - KEY_CONVERTER=org.apache.kafka.connect.json.JsonConverter
+      - VALUE_CONVERTER=org.apache.kafka.connect.json.JsonConverter
