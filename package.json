@@ -1,16 +1,19 @@
 {
-    "name": "catalog-elastic-sample",
-    "module": "server.ts",
-    "type": "module",
-    "scripts": {},
-    "devDependencies": {
-        "@types/bun": "latest",
-        "@types/node": "^25.0.3"
-    },
-    "peerDependencies": {
-        "typescript": "^5.9.3"
-    },
-    "dependencies": {
-        "dotenv": "^17.2.3"
-    }
+  "name": "catalog-elastic-sample",
+  "module": "server.ts",
+  "type": "module",
+  "scripts": {
+      "dev": "concurrently \"cd catalog-server && bun --watch server.ts\" \"cd catalog-client && bun run dev --host\""
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.0.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "concurrently": "^9.2.1",
+    "dotenv": "^17.2.3"
+  }
 }

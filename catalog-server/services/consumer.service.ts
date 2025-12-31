@@ -1,55 +1,50 @@
 import { Kafka } from "kafkajs";
 import { esClient } from "../config/elastic";
 
-// Konfigurasi Kafka
 const kafka = new Kafka({
   clientId: "toko-pancing-sync",
-  brokers: ["localhost:9092"], // Sesuai docker-compose
+  brokers: ["localhost:9092"],
 });
 
 const consumer = kafka.consumer({ groupId: "toko-pancing-group-1" });
-
-// Nama Topik dari Debezium Postgres
-// Format default: prefix.schema.table
 const KAFKA_TOPIC = "pgserver.public.products";
 
 export const startConsumer = async () => {
   try {
     console.log("🔄 Connecting to Kafka...");
     await consumer.connect();
-
-    // Subscribe ke topik produk
     await consumer.subscribe({ topic: KAFKA_TOPIC, fromBeginning: true });
+    
+    console.log(`✅ Sync Worker Started (BULK MODE)! Listening to: ${KAFKA_TOPIC}`);
 
-    console.log(`✅ Sync Worker Started! Listening to: ${KAFKA_TOPIC}`);
-
+    // GUNAKAN eachBatch BUKAN eachMessage
     await consumer.run({
-      eachMessage: async ({ message }) => {
-        if (!message.value) return;
+      eachBatchAutoResolve: true,
+      eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning }) => {
+        if (!isRunning()) return;
 
-        // Parsing JSON dari Debezium
-        const payloadStr = message.value.toString();
-        const payload = JSON.parse(payloadStr);
+        console.log(`📦 Menerima Batch: ${batch.messages.length} pesan.`);
+        
+        const bulkOperations: any[] = [];
 
-        // Debezium structure wrapper (terkadang ada di dalam property 'payload')
-        const data = payload.payload || payload;
+        for (const message of batch.messages) {
+          if (!message.value) continue;
 
-        if (!data) return;
+          const payloadStr = message.value.toString();
+          const payload = JSON.parse(payloadStr);
+          const data = payload.payload || payload;
+          
+          if (!data) continue;
 
-        const { op, after, before } = data;
+          const { op, after, before } = data;
 
-        // ---------------------------------------------------------
-        // LOGIC SINKRONISASI KE ELASTIC
-        // ---------------------------------------------------------
-
-        // Operation: Create (c), Update (u), Read/Snapshot (r)
-        if (["c", "u", "r"].includes(op)) {
-          // console.log(`📥 Upsert Elastic: ${after.name} (SKU: ${after.sku})`);
-
-          await esClient.index({
-            index: "products",
-            id: after.id.toString(), // ID Postgres jadi ID Elastic
-            document: {
+          // 1. Handle CREATE / UPDATE / SNAPSHOT
+          if (['c', 'u', 'r'].includes(op)) {
+            // Format Bulk Elastic butuh 2 baris per aksi:
+            // Baris 1: Metadata (index, id)
+            bulkOperations.push({ index: { _index: "products", _id: after.id.toString() } });
+            // Baris 2: Data Dokumen
+            bulkOperations.push({
               id: after.id,
               sku: after.sku,
               name: after.name,
@@ -57,24 +52,36 @@ export const startConsumer = async () => {
               category: after.category,
               price: after.price,
               tags: after.tags,
-              isActive: after.isactive ?? true, // Perhatikan case sensitive postgres (kadang jadi lowercase)
-            },
-          });
+              isActive: after.isactive ?? true,
+            });
+          } 
+          // 2. Handle DELETE
+          else if (op === 'd') {
+            bulkOperations.push({ delete: { _index: "products", _id: before.id.toString() } });
+          }
+
+          // Tandai pesan ini sudah diproses (biar kalau error gak ngulang dari awal batch)
+          resolveOffset(message.offset);
         }
 
-        // Operation: Delete (d)
-        else if (op === "d") {
-          console.log(`🗑️ Delete from Elastic ID: ${before.id}`);
-          await esClient
-            .delete({
-              index: "products",
-              id: before.id.toString(),
-            })
-            .catch((err) => {
-              // Ignore error if document not found
-              if (err.meta?.statusCode !== 404) console.error(err);
-            });
+        // EKSEKUSI KIRIM KE ELASTIC (Cuma 1x Request per Batch!)
+        if (bulkOperations.length > 0) {
+          try {
+            const { errors, items } = await esClient.bulk({ operations: bulkOperations });
+            
+            if (errors) {
+              console.error("⚠️ Sebagian data gagal masuk Elastic:", JSON.stringify(items));
+            } else {
+              console.log(`✅ Sukses Insert/Update ${batch.messages.length} items sekaligus.`);
+            }
+          } catch (err) {
+            console.error("❌ Gagal Bulk Insert:", err);
+            // Jangan throw error fatal biar consumer gak mati, log saja
+          }
         }
+
+        // Kirim detak jantung ke Kafka biar gak dikira mati saat proses data banyak
+        await heartbeat();
       },
     });
   } catch (error) {

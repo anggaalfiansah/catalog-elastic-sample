@@ -5,15 +5,40 @@ import type { AuthRequest } from "../middlewares/auth.middleware";
 export const ProductController = {
   // Public
   search: async (req: Request, res: Response) => {
-    const q = req.query.q as string;
-    const data = await ProductService.search(q);
-    res.json({ success: true, count: data.length, data });
+    try {
+      const query = (req.query.q as string) || "";
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 12; // Default 12 per load
+
+      const result = await ProductService.search(query, page, limit);
+
+      // Response standar JSON API
+      res.json({
+        success: true,
+        data: result.data, // Array produk (max 12 biji)
+        meta: result.meta, // Info halaman { total: 807, page: 1, ... }
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Search failed" });
+    }
   },
 
   // Public
   trending: async (req: Request, res: Response) => {
     const data = await ProductService.getTrending();
     res.json({ success: true, data });
+  },
+
+  // Protected
+  stats: async (req: Request, res: Response) => {
+    try {
+      const data = await ProductService.getStats();
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("Stats Error:", error);
+      res.status(500).json({ error: "Gagal load statistik" });
+    }
   },
 
   // Protected
@@ -37,7 +62,7 @@ export const ProductController = {
       res.json({ success: true, data: product });
     } catch (e) {
       console.log(`[ERROR] Product Update Failed: `, e);
-      
+
       res.status(500).json({ error: "Update failed" });
     }
   },

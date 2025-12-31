@@ -1,21 +1,23 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/axios";
-import type { Product } from "../../types";
-import { Plus, Trash2, Edit, Loader2, Tag, RefreshCw, Package } from "lucide-react"; // Added RefreshCw & Package
+import { Plus, Trash2, Edit, RefreshCw, Package, Search, Tag } from "lucide-react";
 
-// Import AG Grid Community Types
-import type { ColDef, ICellRendererParams } from "ag-grid-community";
-// Import Komponen Custom Table Anda
+// Types dari AG Grid
+import type { ColDef, ICellRendererParams, IDatasource, IGetRowsParams, GridReadyEvent, GridApi } from "ag-grid-community";
+
+// Komponen Table Wrapper Anda
 import AgGridTable from "../../components/AgGridTable";
+import type { Product } from "../../types";
 
 export default function ProductList() {
-  const [products, setProducts] = useState<Product[]>([]);
+  // Kita TIDAK butuh state 'products' lagi, karena data disimpan internal oleh AG Grid
+  const [gridApi, setGridApi] = useState<GridApi | null>(null);
+
+  // State UI standar
   const [showModal, setShowModal] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false); // State khusus untuk animasi refresh
   const [editingId, setEditingId] = useState<number | null>(null);
 
-  // --- STATE FORM ---
+  // State Form (Tidak berubah)
   const initialForm = {
     sku: "",
     name: "",
@@ -26,36 +28,98 @@ export default function ProductList() {
   };
   const [formData, setFormData] = useState(initialForm);
 
-  // --- FETCH DATA ---
-  useEffect(() => {
-    fetchProducts();
-  }, []);
+  const [searchText, setSearchText] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  const fetchProducts = async () => {
-    try {
-      const res = await api.get("/products?q=");
-      setProducts(res.data.data);
-    } catch (error) {
-      console.error(error);
+  // Logic A: Tunggu 2 detik setelah berhenti mengetik
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchText);
+    }, 2000); // <--- Ubah jadi 2000ms (2 Detik)
+
+    return () => clearTimeout(handler);
+  }, [searchText]);
+
+  // Logic B: Kalau tekan Enter, langsung cari saat itu juga (Bypass Timer)
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      setDebouncedSearch(searchText); // Trigger langsung
+    }
+  };
+  // --- 2. DATASOURCE ---
+  const createDataSource = (query: string): IDatasource => {
+    return {
+      getRows: async (params: IGetRowsParams) => {
+        const pageSize = 10;
+        const page = Math.floor(params.startRow / pageSize) + 1;
+
+        try {
+          const res = await api.get(`/products?q=${query}&page=${page}&limit=${pageSize}`);
+          const rowData = Array.isArray(res.data.data) ? res.data.data : [];
+          const totalRecords = typeof res.data.meta?.total === "number" ? res.data.meta.total : 0;
+
+          if (rowData.length === 0) {
+            params.successCallback([], 0);
+          } else {
+            params.successCallback(rowData, totalRecords);
+          }
+        } catch (error) {
+          console.error("Error fetching data", error);
+          params.failCallback();
+        }
+      },
+    };
+  };
+
+  // --- 3. TRIGGER UPDATE GRID ---
+  useEffect(() => {
+    if (gridApi) {
+      const dataSource = createDataSource(debouncedSearch);
+      gridApi.setGridOption("datasource", dataSource);
+    }
+  }, [debouncedSearch, gridApi]);
+
+  // Handler saat Tabel Siap
+  const onGridReady = (params: GridReadyEvent) => {
+    setGridApi(params.api);
+    // Set datasource pertama kali
+    params.api.setGridOption("datasource", createDataSource(""));
+  };
+
+  // Handler Refresh Manual
+  const handleRefresh = () => {
+    if (gridApi) {
+      // Paksa AG Grid buang cache dan load ulang (tanpa ganti filter)
+      gridApi.refreshInfiniteCache();
     }
   };
 
-  // Wrapper untuk tombol refresh dengan animasi
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    await fetchProducts();
-    // Kasih delay dikit biar kelihatan muter kalau koneksi terlalu cepat
-    setTimeout(() => setIsRefreshing(false), 500);
-  };
-
-  // --- HANDLERS (DELETE, EDIT, RESET, SUBMIT) ---
+  // --- HANDLERS CRUD (Delete & Save) ---
   const handleDelete = async (id: number) => {
-    if (!confirm("Yakin mau hapus produk ini?")) return;
+    if (!confirm("Yakin hapus?")) return;
     try {
       await api.delete(`/products/${id}`);
-      fetchProducts();
-    } catch (error) {
-      alert(`Gagal hapus produk dengan ID ${id}. ${error}`);
+      handleRefresh(); // Refresh tabel setelah hapus
+    } catch (e) {
+      alert(`Gagal hapus produk dengan ID ${id} : ${e}`);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      if (editingId) {
+        await api.put(`/products/${editingId}`, formData);
+        alert("Updated!");
+      } else {
+        await api.post("/products", formData);
+        alert("Created!");
+      }
+      resetForm();
+      handleRefresh(); // Refresh tabel setelah simpan
+    } catch (e) {
+      console.error(e);
+      alert("Gagal simpan");
     }
   };
 
@@ -78,28 +142,6 @@ export default function ProductList() {
     setShowModal(false);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      if (editingId) {
-        await api.put(`/products/${editingId}`, formData);
-        alert("Produk berhasil diperbarui!");
-      } else {
-        await api.post("/products", formData);
-        alert("Produk berhasil dibuat!");
-      }
-      resetForm();
-      fetchProducts();
-    } catch (error) {
-      alert("Gagal menyimpan produk.");
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // --- DEFINISI KOLOM AG GRID ---
   const colDefs: ColDef<Product>[] = [
     {
       field: "sku",
@@ -165,139 +207,83 @@ export default function ProductList() {
 
   return (
     <div className="p-6 space-y-6 bg-gray-50">
-      {/* --- HEADER SECTION YANG DIPERBAGUS --- */}
+      {/* HEADER */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-xl shadow-sm border border-gray-100">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
             <Package className="text-blue-600" /> Manajemen Produk
           </h1>
-          <p className="text-sm text-gray-500 mt-1">Kelola inventaris toko pancing Anda di sini.</p>
+          <p className="text-sm text-gray-500 mt-1">Mode: Infinite Server-Side Pagination</p>
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Tombol Refresh */}
-          <button
-            onClick={handleRefresh}
-            className="flex items-center justify-center p-2.5 text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm active:scale-95"
-            title="Refresh Data"
-          >
-            <RefreshCw size={20} className={isRefreshing ? "animate-spin text-blue-600" : ""} />
+          <div className="relative group w-full sm:w-64">
+            <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+              <Search size={16} className="text-gray-400 group-focus-within:text-blue-500" />
+            </div>
+            {/* INPUT SEARCH */}
+            <input
+              type="text"
+              className="block w-full p-2.5 pl-10 text-sm text-gray-900 border border-gray-200 rounded-lg bg-gray-50 focus:ring-blue-500 outline-none"
+              placeholder="Cari (Enter / 2s)..."
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              onKeyDown={handleKeyDown} // <--- Event Enter dipasang disini
+            />
+          </div>
+
+          <button onClick={handleRefresh} className="p-2.5 text-gray-500 bg-white border border-gray-200 rounded-lg hover:text-blue-600 transition shadow-sm">
+            <RefreshCw size={20} />
           </button>
 
-          {/* Tombol Tambah */}
           <button
             onClick={() => {
               resetForm();
               setShowModal(true);
             }}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg font-medium shadow-md shadow-blue-600/20 transition-all active:scale-95"
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg font-medium shadow-md active:scale-95"
           >
-            <Plus size={20} />
-            <span>Tambah Produk</span>
+            <Plus size={20} /> <span>Baru</span>
           </button>
         </div>
       </div>
 
-      {/* --- AG GRID TABLE --- */}
+      {/* TABLE WRAPPER */}
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-        {/* Wrapper div untuk memberikan padding jika perlu atau styling container grid */}
-        <AgGridTable rowData={products} colDefs={colDefs} />
+        {/* Pastikan AgGridTable Anda mendukung props tambahan ini.
+            Jika tidak, passing props ini langsung ke komponen <AgGridReact> di dalamnya 
+        */}
+        <AgGridTable
+          // 1. Matikan data row manual
+          rowData={null}
+          colDefs={colDefs}
+          // 2. Aktifkan Mode Infinite
+          rowModelType="infinite"
+          // 3. Konfigurasi Pagination
+          pagination={true}
+          paginationPageSize={10} // Harus match dengan pageSize di createDataSource
+          cacheBlockSize={10} // Berapa baris ditarik sekali request
+          paginationPageSizeSelector={[10, 20, 50, 100]}
+          // 4. Hook agar kita bisa kontrol
+          onGridReady={onGridReady}
+        />
       </div>
 
-      {/* MODAL (TIDAK BERUBAH) */}
+      {/* MODAL FORM (Sama seperti sebelumnya, dipersingkat di sini) */}
       {showModal && (
         <div className="fixed inset-0 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm z-50">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-8 shadow-2xl animate-in fade-in zoom-in duration-200 border border-gray-100">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-800">{editingId ? "Edit Produk" : "Tambah Produk Baru"}</h2>
-              <div className="px-3 py-1 bg-blue-50 text-blue-600 text-xs font-bold uppercase rounded-full">{editingId ? "Mode Edit" : "Mode Create"}</div>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-gray-500 uppercase">SKU</label>
-                  <input
-                    required
-                    placeholder="Contoh: JOR-001"
-                    className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all disabled:bg-gray-100 disabled:text-gray-400"
-                    value={formData.sku}
-                    onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-                    disabled={!!editingId}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-gray-500 uppercase">Kategori</label>
-                  <select
-                    className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
-                    value={formData.category}
-                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                  >
-                    <option>Joran</option>
-                    <option>Reel</option>
-                    <option>Umpan</option>
-                    <option>Aksesoris</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-500 uppercase">Nama Produk</label>
-                <input
-                  required
-                  placeholder="Nama lengkap produk..."
-                  className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-500 uppercase">Harga (Rp)</label>
-                <input
-                  required
-                  type="number"
-                  placeholder="0"
-                  className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono"
-                  value={formData.price || ""}
-                  onChange={(e) => setFormData({ ...formData, price: Number(e.target.value) })}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-500 uppercase">Deskripsi</label>
-                <textarea
-                  placeholder="Jelaskan detail produk..."
-                  className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all min-h-[80px]"
-                  rows={3}
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                />
-              </div>
-
-              <div className="space-y-1 relative">
-                <label className="text-xs font-medium text-gray-500 uppercase flex items-center gap-1">
-                  <Tag size={12} /> Tags
-                </label>
-                <input
-                  placeholder="murah, laut, promo (pisahkan dengan koma)"
-                  className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                  value={formData.tags}
-                  onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
-                />
-              </div>
-
-              <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
-                <button type="button" onClick={resetForm} className="px-5 py-2.5 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors font-medium">
+          <div className="bg-white p-8 rounded-2xl w-full max-w-lg shadow-2xl">
+            <h2 className="text-xl font-bold mb-4">{editingId ? "Edit" : "Baru"}</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <input placeholder="SKU" className="w-full border p-2 rounded" value={formData.sku} onChange={(e) => setFormData({ ...formData, sku: e.target.value })} />
+              <input placeholder="Nama" className="w-full border p-2 rounded" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+              <input type="number" placeholder="Harga" className="w-full border p-2 rounded" value={formData.price} onChange={(e) => setFormData({ ...formData, price: Number(e.target.value) })} />
+              <div className="flex justify-end gap-2 mt-4">
+                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 text-gray-600">
                   Batal
                 </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all flex items-center gap-2 font-medium shadow-lg shadow-blue-600/20 disabled:opacity-70 disabled:cursor-not-allowed"
-                >
-                  {loading && <Loader2 size={18} className="animate-spin" />}
-                  {editingId ? "Simpan Perubahan" : "Buat Produk"}
+                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">
+                  Simpan
                 </button>
               </div>
             </form>
